@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Forge Web IDE</title>
+    <!-- Load Monaco Editor CSS -->
+    <link rel="stylesheet" data-name="vs/editor/editor.main" href="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/editor/editor.main.min.css" />
+    <style>
+        :root {
+            --bg-color: #1e1e1e;
+            --panel-bg: #252526;
+            --border-color: #333;
+            --text-color: #d4d4d4;
+            --accent-color: #007acc;
+            --accent-hover: #005999;
+            --error-color: #f48771;
+            --success-color: #89d185;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        header {
+            background-color: var(--panel-bg);
+            padding: 10px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        header h1 {
+            font-size: 1.2rem;
+            font-weight: 500;
+        }
+
+        .header-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .target-select {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            border: 1px solid var(--border-color);
+            padding: 6px 12px;
+            border-radius: 4px;
+            outline: none;
+            cursor: pointer;
+        }
+
+        button {
+            background-color: var(--accent-color);
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background-color 0.2s;
+        }
+
+        button:hover {
+            background-color: var(--accent-hover);
+        }
+
+        main {
+            display: flex;
+            flex: 1;
+            height: calc(100vh - 50px);
+        }
+
+        .editor-container {
+            flex: 1;
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+        }
+
+        #editor {
+            flex: 1;
+            width: 100%;
+        }
+
+        .panel-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background-color: var(--panel-bg);
+        }
+
+        .tabs {
+            display: flex;
+            background-color: #2d2d2d;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .tab {
+            padding: 10px 20px;
+            cursor: pointer;
+            border-right: 1px solid var(--border-color);
+            border-bottom: 2px solid transparent;
+        }
+
+        .tab:hover {
+            background-color: #333;
+        }
+
+        .tab.active {
+            background-color: var(--panel-bg);
+            border-bottom-color: var(--accent-color);
+        }
+
+        .tab-content {
+            display: none;
+            flex: 1;
+            padding: 15px;
+            overflow-y: auto;
+            font-family: 'Consolas', 'Courier New', monospace;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .error-item {
+            color: var(--error-color);
+            margin-bottom: 10px;
+            padding-bottom: 10px;
+            border-bottom: 1px dashed var(--border-color);
+        }
+
+        .success-text {
+            color: var(--success-color);
+        }
+
+        #loading {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(30,30,30,0.8);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            font-size: 1.5rem;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">Loading Wasm Compiler...</div>
+
+    <header>
+        <h1>Forge Web IDE</h1>
+        <div class="header-controls">
+            <select id="targetSelect" class="target-select">
+                <option value="zephyria">Zephyria VM</option>
+                <option value="evm">EVM</option>
+            </select>
+            <button id="compileBtn">Compile</button>
+        </div>
+    </header>
+
+    <main>
+        <div class="editor-container">
+            <div id="editor"></div>
+        </div>
+
+        <div class="panel-container">
+            <div class="tabs">
+                <div class="tab active" data-target="bytecode">Bytecode</div>
+                <div class="tab" data-target="abi">ABI</div>
+                <div class="tab" data-target="errors">Errors / Output</div>
+            </div>
+
+            <div id="bytecode" class="tab-content active">Wait for compilation...</div>
+            <div id="abi" class="tab-content">Wait for compilation...</div>
+            <div id="errors" class="tab-content">No errors.</div>
+        </div>
+    </main>
+
+    <!-- Configure Monaco -->
+    <script>
+        var require = { paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs' } };
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
+
+    <script>
+        // Use existing global variables safely
+        var forgeEditor = null;
+        var wasmInstance = null;
+        var wasmMemory = null;
+        var textEncoder = new TextEncoder();
+        var textDecoder = new TextDecoder();
+
+        // ── Tabs Logic ───────────────────────────────────────────────────────
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                
+                tab.classList.add('active');
+                document.getElementById(tab.dataset.target).classList.add('active');
+            });
+        });
+
+        function showTab(targetId) {
+            document.querySelectorAll('.tab').forEach(t => {
+                if (t.dataset.target === targetId) t.classList.add('active');
+                else t.classList.remove('active');
+            });
+            document.querySelectorAll('.tab-content').forEach(c => {
+                if (c.id === targetId) c.classList.add('active');
+                else c.classList.remove('active');
+            });
+        }
+
+        // ── Monaco Editor Setup ──────────────────────────────────────────────
+        require(['vs/editor/editor.main'], function() {
+            monaco.languages.register({ id: 'forge' });
+            monaco.languages.setMonarchTokensProvider('forge', {
+                tokenizer: {
+                    root: [
+                        [/\b(contract|actions|views|fields|has|is|version|use|as|struct|enum|record|interface|define|asset)\b/, 'keyword'],
+                        [/\b(byte|u8|u16|u32|u64|u256|u256_address|bool|string)\b/, 'type'],
+                        [/\b(true|false)\b/, 'keyword'],
+                        [/[a-zA-Z_]\w*/, 'identifier'],
+                        [/[0-9]+/, 'number'],
+                        [/#[^\n]*/, 'comment'],
+                        [/\/\/[^\n]*/, 'comment'],
+                        [/["'](.*?)["']/, 'string'],
+                    ]
+                }
+            });
+
+            var initialCode = `version 1\ncontract Counter:\n    has:\n        count is u64\n    \n    actions:\n        init() {\n            count = 0\n        }\n        \n        increment() {\n            count = count + 1\n        }\n`;
+
+            forgeEditor = monaco.editor.create(document.getElementById('editor'), {
+                value: initialCode,
+                language: 'forge',
+                theme: 'vs-dark',
+                automaticLayout: true,
+                minimap: { enabled: false },
+                fontSize: 14,
+                fontFamily: "'Consolas', 'Courier New', monospace"
+            });
+        });
+
+        // ── Wasm Loader & Compiler Logic ─────────────────────────────────────
+        async function initWasm() {
+            try {
+                var response = await fetch('forge.wasm');
+                if (!response.ok) {
+                    throw new Error("Failed to fetch forge.wasm: " + response.statusText);
+                }
+                var buffer = await response.arrayBuffer();
+
+                var results = await WebAssembly.instantiate(buffer, {
+                    env: {}
+                });
+
+                wasmInstance = results.instance;
+                wasmMemory = wasmInstance.exports.memory;
+                
+                document.getElementById('loading').style.display = 'none';
+            } catch (error) {
+                console.error("Wasm Initialization Error:", error);
+                document.getElementById('loading').innerHTML = "Failed to load Wasm Compiler.<br>" + error.message;
+            }
+        }
+
+        function encodeString(str) {
+            var bytes = textEncoder.encode(str);
+            var ptr = wasmInstance.exports.allocate(bytes.length);
+            if (ptr === 0) throw new Error("Wasm out of memory");
+            
+            var memoryView = new Uint8Array(wasmMemory.buffer, ptr, bytes.length);
+            memoryView.set(bytes);
+            return { ptr, len: bytes.length };
+        }
+
+        function readCString(ptr) {
+            var memView = new Uint8Array(wasmMemory.buffer, ptr);
+            var len = 0;
+            while (memView[len] !== 0) len++;
+            
+            var stringBytes = new Uint8Array(wasmMemory.buffer, ptr, len);
+            return textDecoder.decode(stringBytes);
+        }
+
+        document.getElementById('compileBtn').addEventListener('click', () => {
+            if (!wasmInstance) {
+                alert("Wasm compiler is not loaded yet.");
+                return;
+            }
+            if (!forgeEditor) {
+                alert("Editor is not ready.");
+                return;
+            }
+
+            var code = forgeEditor.getValue();
+            var target = document.getElementById('targetSelect').value;
+            var targetEvm = (target === 'evm');
+
+            var encodeResult = encodeString(code);
+            var ptr = encodeResult.ptr;
+            var len = encodeResult.len;
+            
+            try {
+                var resultPtr = wasmInstance.exports.compile_forge(ptr, len, targetEvm);
+                wasmInstance.exports.deallocate(ptr, len); // Free input string
+
+                if (resultPtr === 0) {
+                    document.getElementById('errors').innerHTML = "Fatal Error: Wasm failed to return memory.";
+                    showTab('errors');
+                    return;
+                }
+
+                var jsonStr = readCString(resultPtr);
+                var result = JSON.parse(jsonStr);
+
+                if (result.success) {
+                    document.getElementById('bytecode').innerHTML = result.bytecode || "No bytecode generated";
+                    try {
+                        var parsedAbi = JSON.parse(result.abi);
+                        document.getElementById('abi').innerHTML = JSON.stringify(parsedAbi, null, 2);
+                    } catch (e) {
+                        document.getElementById('abi').innerHTML = result.abi || "No ABI generated";
+                    }
+                    
+                    document.getElementById('errors').innerHTML = "<span class='success-text'>Compilation Successful!</span>";
+                    showTab('bytecode');
+                } else {
+                    document.getElementById('bytecode').innerHTML = "Compilation failed.";
+                    document.getElementById('abi').innerHTML = "Compilation failed.";
+                    
+                    var errorHtml = "";
+                    if (result.errors && result.errors.length > 0) {
+                        result.errors.forEach(err => {
+                            errorHtml += '<div class="error-item">';
+                            errorHtml += '<strong>Error [E' + err.code.toString().padStart(4, '0') + ']:</strong> ' + err.message + '<br>';
+                            errorHtml += '<small>at ' + err.file + ':' + err.line + ':' + err.col + '</small>';
+                            errorHtml += '</div>';
+                        });
+                    } else {
+                        errorHtml = "Unknown compilation error occurred.";
+                    }
+                    document.getElementById('errors').innerHTML = errorHtml;
+                    showTab('errors');
+                }
+            } catch (e) {
+                console.error("Compilation error:", e);
+                document.getElementById('errors').innerHTML = "Internal JavaScript exception during compile:\n" + e.message;
+                showTab('errors');
+            }
+        });
+
+        initWasm();
+
+    </script>
+</body>
+</html>
